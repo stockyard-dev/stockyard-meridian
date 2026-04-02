@@ -1,13 +1,23 @@
 package store
-import("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
-type DB struct{*sql.DB}
-type Widget struct{ID int64 `json:"id"`;Name string `json:"name"`;SourceURL string `json:"source_url"`;WidgetType string `json:"widget_type"`;Config string `json:"config"`;Position int `json:"position"`;Enabled bool `json:"enabled"`;LastValue string `json:"last_value"`;UpdatedAt time.Time `json:"updated_at"`}
-type LifeEntry struct{ID int64 `json:"id"`;Category string `json:"category"`;Title string `json:"title"`;Value string `json:"value"`;Date string `json:"date"`;CreatedAt time.Time `json:"created_at"`}
-func Open(d string)(*DB,error){os.MkdirAll(d,0755);dsn:=filepath.Join(d,"meridian.db")+"?_journal_mode=WAL&_busy_timeout=5000";db,err:=sql.Open("sqlite",dsn);if err!=nil{return nil,fmt.Errorf("open: %w",err)};db.SetMaxOpenConns(1);migrate(db);return &DB{db},nil}
-func migrate(db *sql.DB){db.Exec(`CREATE TABLE IF NOT EXISTS widgets(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,source_url TEXT DEFAULT '',widget_type TEXT DEFAULT 'stat',config TEXT DEFAULT '{}',position INTEGER DEFAULT 0,enabled INTEGER DEFAULT 1,last_value TEXT DEFAULT '',updated_at DATETIME DEFAULT CURRENT_TIMESTAMP);CREATE TABLE IF NOT EXISTS life_entries(id INTEGER PRIMARY KEY AUTOINCREMENT,category TEXT NOT NULL,title TEXT NOT NULL,value TEXT DEFAULT '',date TEXT DEFAULT '',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`)}
-func(db *DB)CreateWidget(w *Widget)error{en:=1;if !w.Enabled{en=0};res,err:=db.Exec(`INSERT INTO widgets(name,source_url,widget_type,config,position,enabled)VALUES(?,?,?,?,?,?)`,w.Name,w.SourceURL,w.WidgetType,w.Config,w.Position,en);if err!=nil{return err};w.ID,_=res.LastInsertId();return nil}
-func(db *DB)ListWidgets()([]Widget,error){rows,_:=db.Query(`SELECT id,name,source_url,widget_type,config,position,enabled,last_value,updated_at FROM widgets WHERE enabled=1 ORDER BY position,name`);defer rows.Close();var out[]Widget;for rows.Next(){var w Widget;var en int;rows.Scan(&w.ID,&w.Name,&w.SourceURL,&w.WidgetType,&w.Config,&w.Position,&en,&w.LastValue,&w.UpdatedAt);w.Enabled=en==1;out=append(out,w)};return out,nil}
-func(db *DB)UpdateWidget(id int64,value string){db.Exec(`UPDATE widgets SET last_value=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`,value,id)}
-func(db *DB)LogEntry(e *LifeEntry)error{res,err:=db.Exec(`INSERT INTO life_entries(category,title,value,date)VALUES(?,?,?,?)`,e.Category,e.Title,e.Value,e.Date);if err!=nil{return err};e.ID,_=res.LastInsertId();return nil}
-func(db *DB)ListEntries(category string)([]LifeEntry,error){q:=`SELECT id,category,title,value,date,created_at FROM life_entries WHERE 1=1`;args:=[]interface{}{};if category!=""{q+=` AND category=?`;args=append(args,category)};q+=` ORDER BY date DESC,created_at DESC LIMIT 200`;rows,err:=db.Query(q,args...);if err!=nil{return nil,err};defer rows.Close();var out[]LifeEntry;for rows.Next(){var e LifeEntry;rows.Scan(&e.ID,&e.Category,&e.Title,&e.Value,&e.Date,&e.CreatedAt);out=append(out,e)};return out,nil}
-func(db *DB)Stats()(map[string]interface{},error){var widgets,entries int;db.QueryRow(`SELECT COUNT(*) FROM widgets WHERE enabled=1`).Scan(&widgets);db.QueryRow(`SELECT COUNT(*) FROM life_entries`).Scan(&entries);return map[string]interface{}{"active_widgets":widgets,"total_entries":entries},nil}
+import ("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
+type DB struct{db *sql.DB}
+type Item struct{
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Description string `json:"description"`
+	Status string `json:"status"`
+	Category string `json:"category"`
+	Tags string `json:"tags"`
+	CreatedAt string `json:"created_at"`
+}
+func Open(d string)(*DB,error){if err:=os.MkdirAll(d,0755);err!=nil{return nil,err};db,err:=sql.Open("sqlite",filepath.Join(d,"meridian.db")+"?_journal_mode=WAL&_busy_timeout=5000");if err!=nil{return nil,err}
+db.Exec(`CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT DEFAULT '',status TEXT DEFAULT 'active',category TEXT DEFAULT '',tags TEXT DEFAULT '',created_at TEXT DEFAULT(datetime('now')))`)
+return &DB{db:db},nil}
+func(d *DB)Close()error{return d.db.Close()}
+func genID()string{return fmt.Sprintf("%d",time.Now().UnixNano())}
+func now()string{return time.Now().UTC().Format(time.RFC3339)}
+func(d *DB)Create(e *Item)error{e.ID=genID();e.CreatedAt=now();_,err:=d.db.Exec(`INSERT INTO items(id,name,description,status,category,tags,created_at)VALUES(?,?,?,?,?,?,?)`,e.ID,e.Name,e.Description,e.Status,e.Category,e.Tags,e.CreatedAt);return err}
+func(d *DB)Get(id string)*Item{var e Item;if d.db.QueryRow(`SELECT id,name,description,status,category,tags,created_at FROM items WHERE id=?`,id).Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt)!=nil{return nil};return &e}
+func(d *DB)List()[]Item{rows,_:=d.db.Query(`SELECT id,name,description,status,category,tags,created_at FROM items ORDER BY created_at DESC`);if rows==nil{return nil};defer rows.Close();var o []Item;for rows.Next(){var e Item;rows.Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt);o=append(o,e)};return o}
+func(d *DB)Delete(id string)error{_,err:=d.db.Exec(`DELETE FROM items WHERE id=?`,id);return err}
+func(d *DB)Count()int{var n int;d.db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n);return n}
